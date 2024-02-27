@@ -1,0 +1,77 @@
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: netdevice-driver
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: netdevice-driver
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: netdevice-driver
+subjects:
+- kind: ServiceAccount
+  name: netdevice-driver
+  namespace: kube-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: netdevice-driver
+  namespace: kube-system
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: netdevice-driver
+  namespace: kube-system
+  labels:
+    tier: node
+    app: netdevice-driver
+    k8s-app: netdevice-driver
+spec:
+  selector:
+    matchLabels:
+      app: netdevice-driver
+  template:
+    metadata:
+      labels:
+        tier: node
+        app: netdevice-driver
+        k8s-app: netdevice-driver
+    spec:
+      hostNetwork: true
+      tolerations:
+      - operator: Exists
+        effect: NoSchedule
+      serviceAccountName: netdevice-driver
+      containers:
+      - name: netdevice-driver
+        image: aojea/netdevice-driver:v0.1.0
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "50Mi"
+          limits:
+            cpu: "100m"
+            memory: "50Mi"
+        securityContext:
+          privileged: true
+          capabilities:
+            add: ["NET_ADMIN"]
+        volumeMounts:
+        - name: device-plugin
+          mountPath: /var/lib/kubelet/device-plugins
+        - name: cdi
+          mountPath: /var/run/cdi
+      volumes:
+      - name: device-plugin
+        hostPath:
+          path: /var/lib/kubelet/device-plugins
+      - name: cdi
+        hostPath:
+          path: /var/run/cdi
+---
