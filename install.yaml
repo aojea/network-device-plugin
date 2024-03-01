@@ -50,6 +50,12 @@ spec:
       serviceAccountName: netdevice-driver
       containers:
       - name: netdevice-driver
+        args:
+        - /netdevice-driver
+        - -interfaces
+        - dummy
+        - -v
+        - "4"
         image: aojea/netdevice-driver:v0.1.0
         resources:
           requests:
