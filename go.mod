@@ -5,6 +5,7 @@ go 1.21.4
 require (
 	github.com/containernetworking/cni v1.1.2
 	github.com/containernetworking/plugins v1.4.0
+	github.com/opencontainers/runtime-spec v1.1.0
 	github.com/vishvananda/netlink v1.2.1-beta.2
 	golang.org/x/sys v0.16.0
 	google.golang.org/grpc v1.60.1
@@ -20,7 +21,6 @@ require (
 	github.com/go-logr/logr v1.4.1 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
-	github.com/opencontainers/runtime-spec v1.1.0 // indirect
 	github.com/opencontainers/runtime-tools v0.9.1-0.20221107090550-2e043c6bd626 // indirect
 	github.com/safchain/ethtool v0.3.0 // indirect
 	github.com/syndtr/gocapability v0.0.0-20200815063812-42c35b437635 // indirect

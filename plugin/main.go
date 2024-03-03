@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"k8s.io/klog/v2"
 	"k8s.io/kubelet/pkg/apis/deviceplugin/v1beta1"
 	pluginapi "k8s.io/kubelet/pkg/apis/deviceplugin/v1beta1"
@@ -24,6 +25,7 @@ import (
 	"golang.org/x/sys/unix"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+
 	"tags.cncf.io/container-device-interface/pkg/cdi"
 	"tags.cncf.io/container-device-interface/specs-go"
 )
@@ -47,6 +49,8 @@ const (
 	cdiPath       = "/var/run/cdi"
 
 	NetInterfacesAnnotation = "networking.k8s.io/interfaces"
+	// https://github.com/opencontainers/runtime-spec/issues/1239
+	envNetdevice = "OCI_NETDEVICE_LINUX_SPEC"
 )
 
 var (
@@ -88,7 +92,7 @@ type plugin struct {
 
 func newCDISpec() *specs.Spec {
 	cdi := &specs.Spec{}
-	cdi.Version = "v0.5.0" // TODO to understand what is the minimum version supported in containerd, using 0.5 for safety
+	cdi.Version = specs.CurrentVersion // TODO to understand what is the minimum version supported in containerd, using 0.5 for safety
 	cdi.Kind = resourceName
 	return cdi
 }
@@ -159,7 +163,7 @@ func (p *plugin) ListAndWatch(_ *pluginapi.Empty, s pluginapi.DevicePlugin_ListA
 			health := pluginapi.Unhealthy
 			if iface.Flags&net.FlagUp == 1 {
 				health = pluginapi.Healthy
-				devices = append(devices, resourceName+"="+iface.Name)
+				devices = append(devices, iface.Name)
 			}
 
 			// TODO we can get the driver to discriminate using getIfaceDriver
@@ -173,38 +177,37 @@ func (p *plugin) ListAndWatch(_ *pluginapi.Empty, s pluginapi.DevicePlugin_ListA
 		klog.V(2).Infof("Found following ifaces %v", devices)
 		if len(response.Devices) > 0 {
 			p.mu.Lock()
-			/*
-				// generate cdi config
-				cdi := newCDISpec()
-				for _, dev := range devices {
-					cdi.Devices = append(cdi.Devices, specs.Device{
-						Name:        dev,
-						Annotations: map[string]string{"test": "test"},
-						ContainerEdits: specs.ContainerEdits{
-							Hooks: []*specs.Hook{
-								{
-									HookName: "netdevice",
-									Path:     cdiPath + "/test.sh",
-								},
-							},
-						},
-					})
-				}
-				content, err := json.Marshal(cdi)
-				if err != nil {
-					klog.Infof("Error marshaling message %v", err)
-					continue
-				}
-				if err := os.WriteFile(cdiPath+"netdevice.json", content, 0644); err != nil {
-					klog.Infof("Error to create CDI file %v", err)
-					continue
-				}
-				klog.V(2).InfoS("Created CDI file", "path", cdiPath, "devices", devices)
-			*/
+
+			// generate cdi config
+			cdiSpec := newCDISpec()
+			for _, dev := range devices {
+				cdiSpec.Devices = append(cdiSpec.Devices, specs.Device{
+					Name: dev,
+					ContainerEdits: specs.ContainerEdits{
+						Env: []string{fmt.Sprintf("%s=%s", NetInterfacesAnnotation, dev)},
+					},
+				})
+			}
+
+			specName, err := cdi.GenerateNameForSpec(cdiSpec)
+			if err != nil {
+				klog.V(2).Infof("failed to generate Spec name: %w", err)
+				continue
+			}
+
+			err = p.registry.SpecDB().WriteSpec(cdiSpec, specName)
+			if err != nil {
+				klog.V(2).Infof("failed to write Spec name: %w", err)
+				continue
+			}
+
+			klog.V(2).InfoS("Created CDI file", "path", cdiPath, "devices", devices)
+
 			// update kubelet
 			err = s.Send(&response)
 			if err != nil {
 				klog.V(2).Infof("Error sending message %v", err)
+				continue
 			}
 
 			// update local cache
@@ -245,23 +248,26 @@ func (p *plugin) Allocate(ctx context.Context, in *pluginapi.AllocateRequest) (*
 		// Pass the CDI device plugin with annotations or environment variables
 		// and add a hook on the CDI plugin that reads this and perform the
 		// ip link ethX set netns NS
-		resp := new(v1beta1.ContainerAllocateResponse)
+		resp := v1beta1.ContainerAllocateResponse{}
 		for _, id := range request.DevicesIDs {
 			if len(p.devices) == 0 {
 				return nil, fmt.Errorf("requested devices are not available %q", id)
 			}
 			// pop the first device
-			name := p.devices[0]
+			name := resourceName + "=" + p.devices[0]
 			p.devices = p.devices[1:]
 			resp.CDIDevices = append(resp.CDIDevices, &pluginapi.CDIDevice{Name: name})
 			interfaces = append(interfaces, Ifreq{Name: name})
+			klog.V(2).Infof("Allocate request interface: %s", name)
+
 		}
 		b, err := json.Marshal(interfaces)
 		if err != nil {
 			return nil, fmt.Errorf("requested devices, error marshalling interfaces %v", err)
 		}
-		resp.Annotations = map[string]string{NetInterfacesAnnotation: string(b)}
-		out.ContainerResponses = append(out.ContainerResponses, resp)
+		resp.Envs = map[string]string{envNetdevice: string(b)}
+		resp.Annotations = map[string]string{envNetdevice: string(b)}
+		out.ContainerResponses = append(out.ContainerResponses, &resp)
 	}
 	klog.V(2).Infof("Allocate request response: %v", out)
 	return out, nil
@@ -281,8 +287,7 @@ func (p *plugin) PreStartContainer(context.Context, *pluginapi.PreStartContainer
 	return &pluginapi.PreStartContainerResponse{}, nil
 }
 
-// startServer start the plugin server and return the close function
-func (p *plugin) start() error {
+func (p *plugin) run(ctx context.Context) error {
 	if err := os.Remove(p.Endpoint); err != nil && !os.IsNotExist(err) {
 		return err
 	}
@@ -291,11 +296,18 @@ func (p *plugin) start() error {
 	if err != nil {
 		return err
 	}
+	// Allow 5 sec gracefull shutdown
+	defer func() {
+		time.Sleep(5 * time.Second)
+		socket.Close()
+		os.Remove(p.Endpoint)
+	}()
 
 	p.s = grpc.NewServer()
 	pluginapi.RegisterDevicePluginServer(p.s, p)
 
 	go func() {
+		defer p.s.Stop()
 		err = p.s.Serve(socket)
 		if err != nil {
 			klog.Infof("Server stopped listening: %v", err)
@@ -311,16 +323,12 @@ func (p *plugin) start() error {
 		time.Sleep(1 * time.Second)
 	}
 	klog.Infof("Server is ready listening on: %s", socket.Addr().String())
-
-	return nil
-}
-
-func (p *plugin) stop() error {
-	p.s.Stop()
-
-	if err := os.Remove(p.Endpoint); err != nil && !os.IsNotExist(err) {
+	// register the plugin
+	err = p.register(ctx)
+	if err != nil {
 		return err
 	}
+	<-ctx.Done()
 	return nil
 }
 
@@ -417,30 +425,37 @@ func main() {
 	}()
 	signal.Notify(signalCh, os.Interrupt, unix.SIGINT)
 
-	// Note: The ordering of the workflow is important.
-	// A plugin MUST start serving gRPC service before registering itself with kubelet for successful registration.
-	klog.Info("start plugin")
-	err = plugin.start()
+	// kubelet when restarts remove all the sockets
+	// so we need to detect restarts
+	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		klog.Fatalf("kubelet plugin %s failed to start: %v", plugin.Name, err)
+		klog.Fatalf("Unable to create fsnotify watcher: %v", err)
 	}
-	defer plugin.stop()
+	defer watcher.Close()
 
-	go func() {
-		klog.Info("register plugin")
-		err = plugin.register(ctx)
-		if err != nil {
-			klog.Infof("kubelet plugin %s failed to register: %v", plugin.Name, err)
+	err = watcher.Add(plugin.Endpoint)
+	if err != nil {
+		klog.Fatalf("Unable to add device plugin socket path to fsnotify watcher: %v", err)
+	}
+
+	klog.Info("start plugin")
+	go plugin.run(ctx)
+
+	for {
+		select {
+		case <-signalCh:
+			klog.Info("Exiting: received signal")
 			cancel()
+		case <-ctx.Done():
+			klog.Info("Exiting: context cancelled")
+		case <-watcher.Events:
+			// TODO: improve this, currently check if does not exist to restart the plugin
+			_, err = os.Stat(plugin.Endpoint)
+			if err != nil && os.IsNotExist(err) {
+				klog.Info("restart plugin")
+				go plugin.run(ctx)
+			}
 		}
-	}()
-
-	select {
-	case <-signalCh:
-		klog.Info("Exiting: received signal")
-		cancel()
-	case <-ctx.Done():
-		klog.Info("Exiting: context cancelled")
 	}
 }
 
