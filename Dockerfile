@@ -8,11 +8,9 @@ ENV CGO_ENABLED=0
 
 WORKDIR /go/src/app
 COPY . .
-RUN go mod download
-RUN CGO_ENABLED=0 go build -o /go/bin/plugin ./plugin/main.go 
-RUN CGO_ENABLED=0 go build -o /go/bin/ifup ./ifup/main.go 
-RUN CGO_ENABLED=0 go build -o /go/bin/ifnetns ./ifnetns/main.go 
-
+RUN cd plugin && go mod download && CGO_ENABLED=0 go build -o /go/bin/plugin ./main.go 
+RUN cd ifup && go mod download && CGO_ENABLED=0 go build -o /go/bin/ifup ./main.go 
+RUN cd ifnetns && go mod download && CGO_ENABLED=0 go build -o /go/bin/ifnetns ./main.go 
 
 FROM debian:bookworm
 COPY --from=builder --chown=root:root /go/bin/ifup /opt/cdi/bin/ifup
