@@ -47,10 +47,6 @@ const (
 	resourceName  = "networking.k8s.io/netdevice"
 	cdiPath       = "/var/run/cdi"
 	cdiBinPath    = "/opt/cdi/bin"
-
-	NetInterfacesAnnotation = "networking.k8s.io/interfaces"
-	// https://github.com/opencontainers/runtime-spec/issues/1239
-	envNetdevice = "OCI_NETDEVICE_LINUX_SPEC"
 )
 
 var (
@@ -133,6 +129,13 @@ func (p *plugin) GetPreferredAllocation(ctx context.Context, in *pluginapi.Prefe
 
 func (p *plugin) ListAndWatch(_ *pluginapi.Empty, s pluginapi.DevicePlugin_ListAndWatchServer) error {
 	klog.V(2).Infof("ListAndWatch request")
+	nlChannel := make(chan netlink.LinkUpdate)
+	doneCh := make(chan struct{})
+	defer close(doneCh)
+	if err := netlink.LinkSubscribe(nlChannel, doneCh); err != nil {
+		klog.Infof("error subscring to netlink interfaces: %v", err)
+	}
+
 	for {
 		ifaces, err := net.Interfaces()
 		if err != nil {
@@ -240,7 +243,19 @@ func (p *plugin) ListAndWatch(_ *pluginapi.Empty, s pluginapi.DevicePlugin_ListA
 			p.mu.Unlock()
 		}
 
-		time.Sleep(30 * time.Second)
+		timeout := time.After(time.Minute)
+		select {
+		// trigger a reconcile
+		case <-nlChannel:
+			// poor rate limited
+			time.Sleep(2 * time.Second)
+			// drain the channel
+			for len(nlChannel) > 0 {
+				<-nlChannel
+			}
+		case <-timeout:
+		}
+
 	}
 
 	return nil
