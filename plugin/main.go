@@ -14,7 +14,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fsnotify/fsnotify"
 	"k8s.io/klog/v2"
 	"k8s.io/kubelet/pkg/apis/deviceplugin/v1beta1"
 	pluginapi "k8s.io/kubelet/pkg/apis/deviceplugin/v1beta1"
@@ -320,26 +319,15 @@ func (p *plugin) PreStartContainer(context.Context, *pluginapi.PreStartContainer
 }
 
 func (p *plugin) run(ctx context.Context) error {
-	if err := os.Remove(p.Endpoint); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-
 	socket, err := net.Listen("unix", p.Endpoint)
 	if err != nil {
 		return err
 	}
-	// Allow 5 sec gracefull shutdown
-	defer func() {
-		time.Sleep(5 * time.Second)
-		socket.Close()
-		os.Remove(p.Endpoint)
-	}()
 
 	p.s = grpc.NewServer()
 	pluginapi.RegisterDevicePluginServer(p.s, p)
 
 	go func() {
-		defer p.s.Stop()
 		err = p.s.Serve(socket)
 		if err != nil {
 			klog.Infof("Server stopped listening: %v", err)
@@ -358,15 +346,23 @@ func (p *plugin) run(ctx context.Context) error {
 	// register the plugin
 	err = p.register(ctx)
 	if err != nil {
+		p.s.Stop()
+		socket.Close()
 		return err
 	}
-	<-ctx.Done()
+
+	// Cleanup if socket is cancelled
+	go func() {
+		<-ctx.Done()
+		p.s.Stop()
+		socket.Close()
+	}()
 	return nil
 }
 
 // register the plugin in the kubelet
 func (p *plugin) register(ctx context.Context) error {
-	ctx, timeoutCancel := context.WithTimeout(ctx, 35*time.Second)
+	ctx, timeoutCancel := context.WithTimeout(ctx, 1*time.Minute)
 	defer timeoutCancel()
 
 	conn, err := grpc.DialContext(ctx, "unix://"+path.Join(pluginapi.DevicePluginPath, kubeletSocket), grpc.WithBlock(), grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -391,15 +387,6 @@ func (p *plugin) register(ctx context.Context) error {
 	}
 	klog.Info("connected to the kubelet")
 
-	/* This does not seem to work
-	// wait until kubelet notifies is correctly registered
-	err = wait.PollUntilContextCancel(ctx, 5*time.Second, true, func(ctx context.Context) (bool, error) {
-		p.mu.Lock()
-		defer p.mu.Unlock()
-		return p.registered, p.registerError
-	})
-	return err
-	*/
 	return nil
 }
 
@@ -457,22 +444,18 @@ func main() {
 	}()
 	signal.Notify(signalCh, os.Interrupt, unix.SIGINT)
 
-	// kubelet when restarts remove all the sockets
-	// so we need to detect restarts
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		klog.Fatalf("Unable to create fsnotify watcher: %v", err)
+	if err := os.Remove(plugin.Endpoint); err != nil && !os.IsNotExist(err) {
+		klog.Info("error removing the plugin unix socket %s", plugin.Endpoint)
 	}
-	defer watcher.Close()
-
-	err = watcher.Add(plugin.Endpoint)
-	if err != nil {
-		klog.Fatalf("Unable to add device plugin socket path to fsnotify watcher: %v", err)
-	}
-
 	klog.Info("start plugin")
-	go plugin.run(ctx)
+	ctxPlugin, cancelPlugin := context.WithCancel(ctx)
+	err = plugin.run(ctxPlugin)
+	if err != nil {
+		klog.Fatalf("Unable to start plugin: %v", err)
+	}
 
+	ticker := time.NewTicker(time.Second * 15)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-signalCh:
@@ -480,12 +463,17 @@ func main() {
 			cancel()
 		case <-ctx.Done():
 			klog.Info("Exiting: context cancelled")
-		case <-watcher.Events:
-			// TODO: improve this, currently check if does not exist to restart the plugin
+		case <-ticker.C:
+			// check if socket exists to detect kubelet restarts
 			_, err = os.Stat(plugin.Endpoint)
 			if err != nil && os.IsNotExist(err) {
 				klog.Info("restart plugin")
-				go plugin.run(ctx)
+				cancelPlugin()
+				ctxPlugin, cancelPlugin = context.WithCancel(ctx)
+				err = plugin.run(ctxPlugin)
+				if err != nil {
+					klog.Fatalf("Unable to start plugin: %v", err)
+				}
 			}
 		}
 	}
