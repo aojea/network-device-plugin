@@ -30,6 +30,7 @@ import (
 // https://github.com/opencontainers/runtime-spec/blob/main/config.md
 
 // move the network interface passed as argument to the container network namespace
+// the first argument is the interface name and the rest are addresses in netlink.Addr.String() format
 func main() {
 	// Lock the OS Thread so we don't accidentally switch namespaces
 	runtime.LockOSThread()
@@ -44,15 +45,30 @@ func main() {
 
 	args := os.Args
 
-	if len(args) != 1 {
-		log.Fatalf("expected one argument, the name of the interface: %v", args)
+	if len(args) == 0 {
+		log.Fatalf("expected at least one argument, the name of the interface: %v", args)
 	}
-
 	ifName := args[0]
 	link, err := netlink.LinkByName(ifName)
 	if err != nil {
 		log.Fatalf("can not get interface %s by name: %v", ifName, err)
 	}
+
+	if len(args) > 1 {
+		for _, addr := range args[1:] {
+			nlAddr, err := netlink.ParseAddr(addr)
+			if err != nil {
+				log.Printf("error parsing address %s: %v", addr, err)
+				continue
+			}
+			err = netlink.AddrAdd(link, nlAddr)
+			if err != nil {
+				log.Printf("error adding address %s: %v", addr, err)
+				continue
+			}
+		}
+	}
+
 	// Bring container device up
 	err = netlink.LinkSetUp(link)
 	if err != nil {
