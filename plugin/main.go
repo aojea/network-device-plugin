@@ -47,6 +47,7 @@ const (
 	pluginName    = "netdevice"
 	resourceName  = "networking.k8s.io/netdevice"
 	cdiPath       = "/var/run/cdi"
+	cdiBinPath    = "/opt/cdi/bin"
 
 	NetInterfacesAnnotation = "networking.k8s.io/interfaces"
 	// https://github.com/opencontainers/runtime-spec/issues/1239
@@ -180,11 +181,22 @@ func (p *plugin) ListAndWatch(_ *pluginapi.Empty, s pluginapi.DevicePlugin_ListA
 
 			// generate cdi config
 			cdiSpec := newCDISpec()
-			for _, dev := range devices {
+			for _, ifName := range devices {
 				cdiSpec.Devices = append(cdiSpec.Devices, specs.Device{
-					Name: dev,
+					Name: ifName,
 					ContainerEdits: specs.ContainerEdits{
-						Env: []string{fmt.Sprintf("%s=%s", NetInterfacesAnnotation, dev)},
+						Hooks: []*specs.Hook{
+							{ // move from runtime ns to container ns
+								HookName: "createRuntime",
+								Path:     path.Join(cdiBinPath, "ifnetns"),
+								Args:     []string{ifName},
+							},
+							{ // set interface up and TODO IP addresses
+								HookName: "createContainer",
+								Path:     path.Join(cdiBinPath, "ifup"),
+								Args:     []string{ifName},
+							},
+						},
 					},
 				})
 			}

@@ -48,10 +48,17 @@ spec:
       - operator: Exists
         effect: NoSchedule
       serviceAccountName: netdevice-driver
+      initContainers:
+      - name: install-cdi-bin
+        image: aojea/netdevice-driver:v0.1.0
+        command: ['sh', '-c', 'cd /opt/cdi/bin; for i in * ; do cat $i > /cdi/$i ; chmod +x /cdi/$i ; done']
+        volumeMounts:
+        - name: cdi-bin
+          mountPath: /cdi
       containers:
       - name: netdevice-driver
         args:
-        - /netdevice-driver
+        - /plugin
         - -interfaces
         - dummy
         - -v
@@ -77,7 +84,13 @@ spec:
       - name: device-plugin
         hostPath:
           path: /var/lib/kubelet/device-plugins
+          type: DirectoryOrCreate
       - name: cdi
         hostPath:
           path: /var/run/cdi
+          type: DirectoryOrCreate
+      - name: cdi-bin
+        hostPath:
+          path: /opt/cdi/bin
+          type: DirectoryOrCreate
 ---
