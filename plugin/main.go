@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -59,15 +58,10 @@ var (
 )
 
 // https://man7.org/linux/man-pages/man7/netdevice.7.html
-type Ifreq struct {
-	Name      string `json:"name"`
-	Address   string `json:"address,omitempty"`
-	Broadcast string `json:"broadcast,omitempty"`
-	Netmask   string `json:"netmask,omitempty"`
-	HWAddr    string `json:"hwaddr,omitempty"`
-	Flags     byte   `json:"flags,omitempty"`
-	Ifindex   int    `json:"ifindex,omitempty"`
-	MTU       int    `json:"mtu,omitempty"`
+type netdevice struct {
+	Name      string
+	Addresses []string // IP/Mask format
+	MTU       int
 }
 
 var _ registerapi.RegistrationServer = &plugin{}
@@ -86,7 +80,7 @@ type plugin struct {
 	mu            sync.Mutex
 	registered    bool
 	registerError error
-	devices       []string
+	devices       []netdevice
 	regex         *regexp.Regexp
 	gwIface       string
 }
@@ -145,7 +139,7 @@ func (p *plugin) ListAndWatch(_ *pluginapi.Empty, s pluginapi.DevicePlugin_ListA
 			klog.Infof("error getting system interfaces: %v", err)
 		}
 		response := pluginapi.ListAndWatchResponse{}
-		devices := []string{}
+		devices := []netdevice{}
 		for _, iface := range ifaces {
 			klog.V(2).Infof("Checking iface %s", iface.Name)
 			// skip default interface
@@ -161,10 +155,29 @@ func (p *plugin) ListAndWatch(_ *pluginapi.Empty, s pluginapi.DevicePlugin_ListA
 				continue
 			}
 
+			link, err := netlink.LinkByName(iface.Name)
+			if err != nil {
+				klog.Warningf("Error getting link by name %v", err)
+				continue
+			}
+			addrs, err := netlink.AddrList(link, netlink.FAMILY_ALL)
+			if err != nil {
+				klog.Warningf("Error getting addresses by link %v", err)
+				continue
+			}
+			netdev := netdevice{
+				Name: iface.Name,
+				MTU:  iface.MTU,
+			}
+
+			for _, addr := range addrs {
+				netdev.Addresses = append(netdev.Addresses, addr.String())
+			}
+			devices = append(devices, netdev)
+
 			health := pluginapi.Unhealthy
 			if iface.Flags&net.FlagUp == 1 {
 				health = pluginapi.Healthy
-				devices = append(devices, iface.Name)
 			}
 
 			// TODO we can get the driver to discriminate using getIfaceDriver
@@ -181,20 +194,20 @@ func (p *plugin) ListAndWatch(_ *pluginapi.Empty, s pluginapi.DevicePlugin_ListA
 
 			// generate cdi config
 			cdiSpec := newCDISpec()
-			for _, ifName := range devices {
+			for _, netdev := range devices {
 				cdiSpec.Devices = append(cdiSpec.Devices, specs.Device{
-					Name: ifName,
+					Name: netdev.Name,
 					ContainerEdits: specs.ContainerEdits{
 						Hooks: []*specs.Hook{
 							{ // move from runtime ns to container ns
 								HookName: "createRuntime",
 								Path:     path.Join(cdiBinPath, "ifnetns"),
-								Args:     []string{ifName},
+								Args:     []string{netdev.Name},
 							},
 							{ // set interface up and TODO IP addresses
 								HookName: "createContainer",
 								Path:     path.Join(cdiBinPath, "ifup"),
-								Args:     []string{ifName},
+								Args:     append([]string{netdev.Name}, netdev.Addresses...),
 							},
 						},
 					},
@@ -255,7 +268,6 @@ func (p *plugin) Allocate(ctx context.Context, in *pluginapi.AllocateRequest) (*
 	out := &v1beta1.AllocateResponse{
 		ContainerResponses: make([]*v1beta1.ContainerAllocateResponse, 0, len(in.ContainerRequests)),
 	}
-	interfaces := []Ifreq{}
 	for _, request := range in.GetContainerRequests() {
 		// Pass the CDI device plugin with annotations or environment variables
 		// and add a hook on the CDI plugin that reads this and perform the
@@ -266,19 +278,12 @@ func (p *plugin) Allocate(ctx context.Context, in *pluginapi.AllocateRequest) (*
 				return nil, fmt.Errorf("requested devices are not available %q", id)
 			}
 			// pop the first device
-			name := resourceName + "=" + p.devices[0]
+			name := resourceName + "=" + p.devices[0].Name
 			p.devices = p.devices[1:]
 			resp.CDIDevices = append(resp.CDIDevices, &pluginapi.CDIDevice{Name: name})
-			interfaces = append(interfaces, Ifreq{Name: name})
 			klog.V(2).Infof("Allocate request interface: %s", name)
 
 		}
-		b, err := json.Marshal(interfaces)
-		if err != nil {
-			return nil, fmt.Errorf("requested devices, error marshalling interfaces %v", err)
-		}
-		resp.Envs = map[string]string{envNetdevice: string(b)}
-		resp.Annotations = map[string]string{envNetdevice: string(b)}
 		out.ContainerResponses = append(out.ContainerResponses, &resp)
 	}
 	klog.V(2).Infof("Allocate request response: %v", out)
