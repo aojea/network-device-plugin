@@ -1,0 +1,97 @@
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: tcpdirect-plugin
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: tcpdirect-plugin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: tcpdirect-plugin
+subjects:
+- kind: ServiceAccount
+  name: tcpdirect-plugin
+  namespace: kube-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tcpdirect-plugin
+  namespace: kube-system
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: tcpdirect-plugin
+  namespace: kube-system
+  labels:
+    tier: node
+    app: tcpdirect-plugin
+    k8s-app: tcpdirect-plugin
+spec:
+  selector:
+    matchLabels:
+      app: tcpdirect-plugin
+  template:
+    metadata:
+      labels:
+        tier: node
+        app: tcpdirect-plugin
+        k8s-app: tcpdirect-plugin
+    spec:
+      hostNetwork: true
+      tolerations:
+      - operator: Exists
+        effect: NoSchedule
+      serviceAccountName: tcpdirect-plugin
+      nodeSelector:
+        node.kubernetes.io/instance-type: a3-highgpu-8gs
+        kubernetes.io/hostname: gke-daily-run-single-zone-gker27-np-1-d181ecf4-02kn
+      initContainers:
+      - name: install-cdi-bin
+        image: aojea/tcpdirect-plugin:v0.1.0
+        command: ['sh', '-c', 'cd /opt/cdi/bin; for i in * ; do cat $i > /cdi/$i ; chmod +x /cdi/$i ; done']
+        volumeMounts:
+        - name: cdi-bin
+          mountPath: /cdi
+      containers:
+      - name: tcpdirect-plugin
+        args:
+        - /plugin
+        - -v
+        - "4"
+        image: aojea/tcpdirect-plugin:v0.1.0
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "50Mi"
+          limits:
+            cpu: "100m"
+            memory: "50Mi"
+        securityContext:
+          privileged: true
+          capabilities:
+            add: ["NET_ADMIN"]
+        volumeMounts:
+        - name: device-plugin
+          mountPath: /var/lib/kubelet/device-plugins
+        - name: cdi
+          mountPath: /var/run/cdi
+      volumes:
+      - name: device-plugin
+        hostPath:
+          path: /var/lib/kubelet/device-plugins
+          type: DirectoryOrCreate
+      - name: cdi
+        hostPath:
+          path: /var/run/cdi
+          type: DirectoryOrCreate
+      - name: cdi-bin
+        hostPath:
+          path: /opt/cdi/bin
+          type: DirectoryOrCreate
+---

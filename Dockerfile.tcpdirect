@@ -1,0 +1,19 @@
+ARG GOARCH="amd64"
+
+FROM golang:1.22 AS builder
+# golang envs
+ARG GOARCH="amd64"
+ARG GOOS=linux
+ENV CGO_ENABLED=0
+
+WORKDIR /go/src/app
+COPY . .
+RUN cd tcpdirect && go mod download && CGO_ENABLED=0 go build -o /go/bin/plugin ./main.go 
+RUN cd ifup && go mod download && CGO_ENABLED=0 go build -o /go/bin/ifup ./main.go 
+RUN cd ifnetns && go mod download && CGO_ENABLED=0 go build -o /go/bin/ifnetns ./main.go 
+
+FROM debian:bookworm
+COPY --from=builder --chown=root:root /go/bin/ifup /opt/cdi/bin/ifup
+COPY --from=builder --chown=root:root /go/bin/ifnetns /opt/cdi/bin/ifnetns
+COPY --from=builder --chown=root:root /go/bin/plugin /plugin
+CMD ["/plugin"]
