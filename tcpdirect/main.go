@@ -44,7 +44,7 @@ const (
 	pluginName    = "tcpdirect"
 	resourceName  = "networking.k8s.io/tcpdirect"
 	cdiPath       = "/var/run/cdi"
-	cdiBinPath    = "/opt/cdi/bin"
+	cdiBinPath    = "/var/run/cdi/bin"
 )
 
 // https://man7.org/linux/man-pages/man7/netdevice.7.html

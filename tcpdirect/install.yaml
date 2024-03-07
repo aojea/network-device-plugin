@@ -51,7 +51,7 @@ spec:
       initContainers:
       - name: install-cdi-bin
         image: aojea/tcpdirect-plugin:v0.1.0
-        command: ['sh', '-c', 'cd /opt/cdi/bin; for i in * ; do cat $i > /cdi/$i ; chmod +x /cdi/$i ; done']
+        command: ['sh', '-c', 'cd /var/run/cdi/bin; for i in * ; do cat $i > /cdi/$i ; chmod +x /cdi/$i ; done']
         volumeMounts:
         - name: cdi-bin
           mountPath: /cdi
@@ -89,6 +89,6 @@ spec:
           type: DirectoryOrCreate
       - name: cdi-bin
         hostPath:
-          path: /opt/cdi/bin
+          path: /var/run/cdi/bin
           type: DirectoryOrCreate
 ---
