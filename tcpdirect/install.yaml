@@ -48,9 +48,6 @@ spec:
       - operator: Exists
         effect: NoSchedule
       serviceAccountName: tcpdirect-plugin
-      nodeSelector:
-        node.kubernetes.io/instance-type: a3-highgpu-8gs
-        kubernetes.io/hostname: gke-daily-run-single-zone-gker27-np-1-d181ecf4-02kn
       initContainers:
       - name: install-cdi-bin
         image: aojea/tcpdirect-plugin:v0.1.0
