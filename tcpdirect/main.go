@@ -77,7 +77,7 @@ type plugin struct {
 
 func newCDISpec() *specs.Spec {
 	cdi := &specs.Spec{}
-	cdi.Version = specs.CurrentVersion // TODO to understand what is the minimum version supported in containerd, using 0.5 for safety
+	cdi.Version = "0.5.0" // GKE compatible version
 	cdi.Kind = resourceName
 	return cdi
 }
@@ -259,11 +259,14 @@ func (p *plugin) Allocate(ctx context.Context, in *pluginapi.AllocateRequest) (*
 		// ip link ethX set netns NS
 		resp := v1beta1.ContainerAllocateResponse{}
 		for _, id := range request.DevicesIDs {
-			if len(p.devices) == 0 {
+			if len(p.devices) != 4 {
 				return nil, fmt.Errorf("requested devices are not available %q", id)
 			}
-
-			resp.CDIDevices = append(resp.CDIDevices, &pluginapi.CDIDevice{Name: pluginName})
+			for _, device := range p.devices {
+				name := resourceName + "=" + device.Name
+				klog.V(2).Infof("Allocating interface: %s", name)
+				resp.CDIDevices = append(resp.CDIDevices, &pluginapi.CDIDevice{Name: name})
+			}
 			klog.V(2).Infof("Allocate request interface: %s", pluginName)
 
 		}
