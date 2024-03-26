@@ -100,6 +100,7 @@ kubectl get nodes kind-worker -o json | jq .status.allocatable
   "networking.k8s.io/netdevice": "1", <--------------------
   "pods": "110"
 }
+```
 
 
 Now you can request that netdevice specifying it in the pod spec
