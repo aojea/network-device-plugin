@@ -4,9 +4,6 @@ Kubelet network device plugin
 Very hacky example just to demonstrate technically feasibility on how to solve the plumbing of network interfaces to Pods using CDI (removing the depependency on CDI)
 Presented in [SIG Network meeting 20240314](https://www.youtube.com/watch?v=67UzeMEaqnM&list=PL69nYSiGNLP2E8vmnqo5MwPOY25sDWIxb&index=1)
 Slides in https://docs.google.com/presentation/d/1pjDCtpdbCSWaqCbBYWgzTxAewOVbMf6rUS5SbjAJAe8/edit?usp=sharing
-Demo
-
-[![asciicast](https://asciinema.org/a/v7Xz4uPHAonUnTHfVARL6Kcpr.svg)](https://asciinema.org/a/v7Xz4uPHAonUnTHfVARL6Kcpr)
 
 
 ## Requirements
